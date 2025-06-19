@@ -9,16 +9,27 @@ const { exec } = require('child_process');
 // Configuration
 const SERVER_URL = process.env.SERVER_URL || 'http://192.168.1.120:3009';
 
-// Get API key from systemd service file
+// Get API key from file
 function getApiKey() {
   try {
+    // First try to get from command line arguments
+    if (process.argv[2]) {
+      return process.argv[2];
+    }
+    
+    // Then try to read from API key file
+    if (fs.existsSync('/etc/inpatient-display/api-key')) {
+      return fs.readFileSync('/etc/inpatient-display/api-key', 'utf8').trim();
+    }
+    
+    // Fallback to service file (for backward compatibility)
     const serviceContent = fs.readFileSync('/etc/systemd/system/inpatient-reboot.service', 'utf8');
     const match = serviceContent.match(/REBOOT_API_KEY=([a-f0-9]+)/);
     if (match) {
       return match[1];
     }
   } catch (error) {
-    console.error('Error reading service file:', error.message);
+    console.error('Error reading API key:', error.message);
   }
   return null;
 }
@@ -47,7 +58,7 @@ function getSystemInfo() {
 async function registerWithServer() {
   const apiKey = getApiKey();
   if (!apiKey) {
-    console.error('Could not find API key in service file');
+    console.error('Could not find API key');
     return;
   }
 

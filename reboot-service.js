@@ -1,97 +1,95 @@
 #!/usr/bin/env node
 
 // reboot-service.js
-// This service runs on Raspberry Pi clients to handle reboot commands
-// Run with: sudo node reboot-service.js
+// This service runs on the Raspberry Pi to handle reboot requests from the server
 
 const express = require('express');
-const { exec } = require('child_process');
-const cors = require('cors');
+const fs = require('fs');
+
+// Configuration
+const PORT = process.env.PORT || 3001;
+const API_KEY_FILE = process.env.REBOOT_API_KEY_FILE || '/etc/inpatient-display/api-key';
+
+// Get API key from file
+function getApiKey() {
+  try {
+    if (fs.existsSync(API_KEY_FILE)) {
+      return fs.readFileSync(API_KEY_FILE, 'utf8').trim();
+    }
+  } catch (error) {
+    console.error('Error reading API key file:', error.message);
+  }
+  return null;
+}
 
 const app = express();
-const PORT = 3001;
-
-app.use(cors());
 app.use(express.json());
 
-// Simple authentication (you might want to make this more secure)
-const API_KEY = process.env.REBOOT_API_KEY || 'your-reboot-api-key';
-
-const authenticate = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'];
-  if (apiKey !== API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized' });
+// Middleware to check API key
+function authenticateApiKey(req, res, next) {
+  const providedKey = req.headers['x-api-key'] || req.query.apiKey;
+  const expectedKey = getApiKey();
+  
+  if (!expectedKey) {
+    console.error('No API key configured');
+    return res.status(500).json({ error: 'API key not configured' });
   }
+  
+  if (!providedKey || providedKey !== expectedKey) {
+    console.error('Invalid API key provided');
+    return res.status(401).json({ error: 'Invalid API key' });
+  }
+  
   next();
-};
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
-    status: 'ok', 
+    status: 'healthy', 
     timestamp: new Date().toISOString(),
-    hostname: require('os').hostname()
-  });
-});
-
-// API key endpoint (for frontend registration)
-app.get('/api-key', (req, res) => {
-  res.json({ 
-    apiKey: process.env.REBOOT_API_KEY || API_KEY
+    apiKeyConfigured: !!getApiKey()
   });
 });
 
 // Reboot endpoint
-app.post('/reboot', authenticate, (req, res) => {
-  console.log('Reboot command received:', req.body);
+app.post('/reboot', authenticateApiKey, (req, res) => {
+  console.log('Reboot request received');
   
   // Send immediate response
   res.json({ 
-    message: 'Reboot command received, system will reboot in 10 seconds',
+    status: 'rebooting',
     timestamp: new Date().toISOString()
   });
   
-  // Execute reboot after 10 seconds
+  // Execute reboot after a short delay
   setTimeout(() => {
     console.log('Executing reboot...');
-    exec('sudo reboot', (error, stdout, stderr) => {
+    const { exec } = require('child_process');
+    exec('sudo reboot', (error) => {
       if (error) {
-        console.error('Reboot error:', error);
-        return;
+        console.error('Reboot failed:', error);
+      } else {
+        console.log('Reboot command executed successfully');
       }
-      console.log('Reboot command executed successfully');
     });
-  }, 10000);
+  }, 1000);
 });
 
-// Graceful shutdown endpoint
-app.post('/shutdown', authenticate, (req, res) => {
-  console.log('Shutdown command received');
-  
-  res.json({ 
-    message: 'Shutdown command received, system will shutdown in 10 seconds',
-    timestamp: new Date().toISOString()
-  });
-  
-  setTimeout(() => {
-    console.log('Executing shutdown...');
-    exec('sudo shutdown -h now', (error, stdout, stderr) => {
-      if (error) {
-        console.error('Shutdown error:', error);
-        return;
-      }
-      console.log('Shutdown command executed successfully');
-    });
-  }, 10000);
+// Start server
+app.listen(PORT, () => {
+  console.log(`Reboot service started on port ${PORT}`);
+  console.log(`API key file: ${API_KEY_FILE}`);
+  console.log(`API key configured: ${!!getApiKey()}`);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Reboot service listening on port ${PORT}`);
-  console.log(`Hostname: ${require('os').hostname()}`);
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('Received SIGTERM, shutting down gracefully');
+  process.exit(0);
 });
 
-// Handle graceful shutdown
 process.on('SIGINT', () => {
-  console.log('Reboot service shutting down...');
+  console.log('Received SIGINT, shutting down gracefully');
   process.exit(0);
 }); 

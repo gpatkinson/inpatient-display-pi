@@ -5,12 +5,12 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/gpa/inpatient-display
-ExecStart=/usr/bin/node reboot-service.js
+WorkingDirectory=/opt/inpatient-display
+ExecStart=/usr/bin/node /usr/local/bin/inpatient-reboot-service
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
-Environment=REBOOT_API_KEY=your-secure-api-key-here
+Environment=REBOOT_API_KEY_FILE=/etc/inpatient-display/api-key
 
 [Install]
 WantedBy=multi-user.target 

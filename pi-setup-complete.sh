@@ -117,8 +117,38 @@ configure_autostart() {
     # Create autostart directory
     mkdir -p /home/pi/.config/autostart
     
-    # Create desktop entry for browser
-    cat > /home/pi/.config/autostart/inpatient-display.desktop << EOF
+    # Check if we're running headless (no physical display)
+    if [ -z "$DISPLAY" ] || ! xset q >/dev/null 2>&1; then
+        log "No physical display detected, setting up headless mode..."
+        
+        # Install virtual display tools
+        apt install -y xvfb x11vnc
+        
+        # Create virtual display startup script
+        cat > /home/pi/start-virtual-display.sh << 'EOF'
+#!/bin/bash
+export DISPLAY=:0
+Xvfb :0 -screen 0 1920x1080x24 &
+sleep 2
+chromium-browser --kiosk --disable-web-security --user-data-dir=/tmp/chrome-inpatient --no-first-run --no-default-browser-check http://192.168.1.120:3008/display
+EOF
+        chmod +x /home/pi/start-virtual-display.sh
+        chown pi:pi /home/pi/start-virtual-display.sh
+        
+        # Create desktop entry for virtual display
+        cat > /home/pi/.config/autostart/inpatient-display.desktop << EOF
+[Desktop Entry]
+Type=Application
+Name=Inpatient Display
+Exec=/home/pi/start-virtual-display.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+    else
+        log "Physical display detected, using standard kiosk mode..."
+        
+        # Create desktop entry for browser
+        cat > /home/pi/.config/autostart/inpatient-display.desktop << EOF
 [Desktop Entry]
 Type=Application
 Name=Inpatient Display
@@ -126,6 +156,7 @@ Exec=chromium-browser --kiosk --disable-web-security --user-data-dir=/tmp/chrome
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
+    fi
     
     # Set permissions
     chown -R pi:pi /home/pi/.config/autostart

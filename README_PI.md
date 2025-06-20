@@ -18,9 +18,14 @@ curl -sSL https://raw.githubusercontent.com/yourusername/inpatient-display-pi/ma
 ```
 
 ### Manual Setup
+0. Initial Prep 
+   ```bash
+   sudo apt install git
+   ```
+
 1. **Clone this repository:**
    ```bash
-   sudo git clone https://github.com/yourusername/inpatient-display-pi.git /opt/inpatient-display
+   sudo git clone git@github.com/gpatkinson/inpatient-display-pi.git /opt/inpatient-display
    cd /opt/inpatient-display
    ```
 

@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 # Configuration
 SERVER_IP="192.168.1.120"  # Change this to your server IP
 SERVER_PORT="3009"
-REPO_URL="https://github.com/yourusername/inpatient-display-pi.git"  # Change this
+REPO_URL="https://github.com/gpatkinson/inpatient-display-pi.git"  # Change this
 SETUP_DIR="/opt/inpatient-display"
 LOG_FILE="/tmp/pi-setup.log"
 
@@ -60,8 +60,6 @@ install_packages() {
         unclutter \
         xdotool \
         chromium-browser \
-        nodejs \
-        npm \
         cron \
         screen \
         htop \
@@ -69,8 +67,15 @@ install_packages() {
         nginx \
         openssh-server
     
-    # Update npm to latest version
-    npm install -g npm@latest
+    # Install Node.js 20.x from NodeSource
+    log "Installing Node.js 20.x..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt install -y nodejs
+    
+    # Verify Node.js and npm versions
+    NODE_VERSION=$(node --version)
+    NPM_VERSION=$(npm --version)
+    log "Installed Node.js $NODE_VERSION and npm $NPM_VERSION"
     
     log "Package installation completed"
 }
@@ -133,13 +138,39 @@ EOF
 configure_display() {
     log "Configuring display settings..."
     
-    # Disable screen saver
-    cat > /etc/xdg/lxsession/LXDE-pi/autostart << EOF
+    # Create autostart directory if it doesn't exist
+    mkdir -p /etc/xdg/lxsession/LXDE-pi/
+    
+    # Disable screen saver - try multiple locations for different Pi OS versions
+    AUTOSTART_FILES=(
+        "/etc/xdg/lxsession/LXDE-pi/autostart"
+        "/etc/xdg/lxsession/LXDE/autostart"
+        "/home/pi/.config/lxsession/LXDE-pi/autostart"
+    )
+    
+    for autostart_file in "${AUTOSTART_FILES[@]}"; do
+        if [ -d "$(dirname "$autostart_file")" ]; then
+            log "Configuring autostart at: $autostart_file"
+            cat > "$autostart_file" << EOF
 @xset s off
 @xset -dpms
 @xset s noblank
 @unclutter -idle 0.1 -root
 EOF
+            chown pi:pi "$autostart_file" 2>/dev/null || true
+            break
+        fi
+    done
+    
+    # Also configure for the pi user specifically
+    mkdir -p /home/pi/.config/lxsession/LXDE-pi/
+    cat > /home/pi/.config/lxsession/LXDE-pi/autostart << EOF
+@xset s off
+@xset -dpms
+@xset s noblank
+@unclutter -idle 0.1 -root
+EOF
+    chown -R pi:pi /home/pi/.config/lxsession/
     
     # Configure Chromium for kiosk mode
     mkdir -p /home/pi/.config/chromium/Default
@@ -170,17 +201,28 @@ EOF
 setup_reboot_service() {
     log "Setting up reboot service..."
     
+    # Check if service file exists
+    if [ ! -f "$SETUP_DIR/reboot-service.service" ]; then
+        error "Service file not found: $SETUP_DIR/reboot-service.service"
+    fi
+    
     # Copy service file
     cp "$SETUP_DIR/reboot-service.service" /etc/systemd/system/
     
-    # Copy reboot service script
+    # Update service file to run from correct directory
+    sed -i 's|ExecStart=/usr/bin/node /usr/local/bin/inpatient-reboot-service|ExecStart=/usr/bin/node /opt/inpatient-display/reboot-service.js|g' /etc/systemd/system/reboot-service.service
+    
+    # Copy reboot service script (keep for reference)
+    if [ ! -f "$SETUP_DIR/reboot-service.js" ]; then
+        error "Reboot service script not found: $SETUP_DIR/reboot-service.js"
+    fi
     cp "$SETUP_DIR/reboot-service.js" /usr/local/bin/inpatient-reboot-service
     chmod +x /usr/local/bin/inpatient-reboot-service
     
     # Enable and start service
     systemctl daemon-reload
-    systemctl enable inpatient-reboot
-    systemctl start inpatient-reboot
+    systemctl enable reboot-service.service
+    systemctl start reboot-service.service
     
     log "Reboot service configured"
 }
@@ -193,10 +235,14 @@ register_pi() {
     if [ ! -f /etc/inpatient-display/api-key ]; then
         API_KEY=$(openssl rand -hex 32)
         echo "$API_KEY" > /etc/inpatient-display/api-key
-        chmod 600 /etc/inpatient-display/api-key
+        chmod 644 /etc/inpatient-display/api-key
+        chown pi:pi /etc/inpatient-display/api-key
         log "Generated new API key"
     else
         API_KEY=$(cat /etc/inpatient-display/api-key)
+        # Fix permissions if they're wrong
+        chmod 644 /etc/inpatient-display/api-key
+        chown pi:pi /etc/inpatient-display/api-key
         log "Using existing API key"
     fi
     
@@ -219,8 +265,27 @@ setup_periodic_registration() {
     cp "$SETUP_DIR/register-pi-periodic.js" /usr/local/bin/
     chmod +x /usr/local/bin/register-pi-periodic.js
     
-    # Add to crontab
-    (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/bin/node /usr/local/bin/register-pi-periodic.js >> /tmp/pi-registration.log 2>&1") | crontab -
+    # Ensure API key file has correct permissions for pi user
+    if [ -f /etc/inpatient-display/api-key ]; then
+        chmod 644 /etc/inpatient-display/api-key
+        chown pi:pi /etc/inpatient-display/api-key
+    fi
+    
+    # Add to crontab (remove any existing entries first)
+    CRON_JOB="*/5 * * * * sudo /usr/bin/node /usr/local/bin/register-pi-periodic.js >> /tmp/pi-registration.log 2>&1"
+    
+    # Remove existing cron job if it exists
+    (crontab -l 2>/dev/null | grep -v "register-pi-periodic.js") | crontab -
+    
+    # Add new cron job
+    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+    
+    # Verify cron job was added
+    if crontab -l 2>/dev/null | grep -q "register-pi-periodic.js"; then
+        log "Periodic registration cron job added successfully"
+    else
+        warn "Failed to add periodic registration cron job"
+    fi
     
     log "Periodic registration configured"
 }
@@ -234,7 +299,7 @@ configure_ssh() {
     systemctl start ssh
     
     # Optional: Change default password
-    echo "pi:raspberry" | chpasswd
+    # echo "pi:raspberry" | chpasswd
     
     log "SSH configured"
 }
@@ -243,17 +308,29 @@ configure_ssh() {
 configure_firewall() {
     log "Configuring firewall..."
     
-    # Allow SSH
-    ufw allow ssh
+    # Check if UFW is available
+    if ! command -v ufw &> /dev/null; then
+        log "UFW not found, installing..."
+        apt install -y ufw
+    fi
     
-    # Allow HTTP/HTTPS for display
-    ufw allow 80
-    ufw allow 443
-    
-    # Enable firewall
-    ufw --force enable
-    
-    log "Firewall configured"
+    # Check if UFW installation was successful
+    if command -v ufw &> /dev/null; then
+        # Allow SSH
+        ufw allow ssh
+        
+        # Allow HTTP/HTTPS for display
+        ufw allow 80
+        ufw allow 443
+        
+        # Enable firewall
+        ufw --force enable
+        
+        log "Firewall configured with UFW"
+    else
+        warn "UFW installation failed, skipping firewall configuration"
+        log "You may want to configure firewall manually or install UFW later"
+    fi
 }
 
 # Create status script
@@ -269,7 +346,7 @@ echo "Uptime: $(uptime)"
 echo ""
 
 echo "=== Services ==="
-systemctl status inpatient-reboot --no-pager -l
+systemctl status reboot-service.service --no-pager -l
 echo ""
 
 echo "=== Network ==="
@@ -309,7 +386,7 @@ create_update_script() {
 cd /opt/inpatient-display
 git pull origin main
 npm install
-systemctl restart inpatient-reboot
+systemctl restart reboot-service.service
 echo "Update completed. Consider rebooting if needed."
 EOF
     

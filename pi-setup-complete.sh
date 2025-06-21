@@ -65,7 +65,8 @@ install_packages() {
         htop \
         vim \
         nginx \
-        openssh-server
+        openssh-server \
+        lightdm
     
     # Install Node.js 20.x from NodeSource
     log "Installing Node.js 20.x..."
@@ -117,52 +118,74 @@ configure_autostart() {
     # Create autostart directory
     mkdir -p /home/pi/.config/autostart
     
-    # Check if we're running headless (no physical display)
-    if [ -z "$DISPLAY" ] || ! xset q >/dev/null 2>&1; then
-        log "No physical display detected, setting up headless mode..."
-        
-        # Install virtual display tools
-        apt install -y xvfb x11vnc
-        
-        # Create virtual display startup script
-        cat > /home/pi/start-virtual-display.sh << 'EOF'
+    # Create the proven start script based on README configuration
+    log "Creating proven Chromium start script..."
+    cat > /home/pi/start-display.sh << 'EOF'
 #!/bin/bash
+sleep 10
+
+# Force X11 mode (not Wayland)
 export DISPLAY=:0
-Xvfb :0 -screen 0 1920x1080x24 &
-sleep 2
-chromium-browser --kiosk --disable-web-security --user-data-dir=/tmp/chrome-inpatient --no-first-run --no-default-browser-check http://192.168.1.120:3008/display
+export XDG_SESSION_TYPE=x11
+unset WAYLAND_DISPLAY
+
+# Kill any existing processes
+pkill -f chromium
+pkill -f unclutter
+
+# Hide cursor and disable screen blanking (with error handling)
+unclutter -idle 0 -root &
+xset s off 2>/dev/null || true
+xset -dpms 2>/dev/null || true
+xset s noblank 2>/dev/null || true
+
+# Start Chromium with proven configuration and correct URL
+chromium-browser \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-gpu \
+  --disable-software-rasterizer \
+  --noerrdialogs \
+  --disable-infobars \
+  --kiosk \
+  --enable-touch-events \
+  --enable-touch-drag-drop \
+  --force-enable-touch-events \
+  --disable-features=VizDisplayCompositor \
+  --user-data-dir=/tmp/chromium-kiosk \
+  --disable-background-timer-throttling \
+  --disable-backgrounding-occluded-windows \
+  --disable-renderer-backgrounding \
+  --touch-events=enabled \
+  --enable-logging \
+  --v=1 \
+  --enable-features=TouchEventFeatureDetection \
+  --disable-features=UseOzonePlatform \
+  --ozone-platform=x11 \
+  http://SERVER_IP:3008?cache=$(date +%s)
 EOF
-        chmod +x /home/pi/start-virtual-display.sh
-        chown pi:pi /home/pi/start-virtual-display.sh
-        
-        # Create desktop entry for virtual display
-        cat > /home/pi/.config/autostart/inpatient-display.desktop << EOF
+
+    # Replace SERVER_IP placeholder with actual IP
+    sed -i "s/SERVER_IP/$SERVER_IP/g" /home/pi/start-display.sh
+    
+    chmod +x /home/pi/start-display.sh
+    chown pi:pi /home/pi/start-display.sh
+    
+    # Create desktop entry for the start script
+    cat > /home/pi/.config/autostart/inpatient-display.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Inpatient Display
-Exec=/home/pi/start-virtual-display.sh
+Exec=/home/pi/start-display.sh
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
-    else
-        log "Physical display detected, using standard kiosk mode..."
-        
-        # Create desktop entry for browser
-        cat > /home/pi/.config/autostart/inpatient-display.desktop << EOF
-[Desktop Entry]
-Type=Application
-Name=Inpatient Display
-Exec=chromium-browser --kiosk --disable-web-security --user-data-dir=/tmp/chrome-inpatient --no-first-run --no-default-browser-check http://$SERVER_IP:3008/display
-Terminal=false
-X-GNOME-Autostart-enabled=true
-EOF
-    fi
     
     # Set permissions
     chown -R pi:pi /home/pi/.config/autostart
     chmod +x /home/pi/.config/autostart/inpatient-display.desktop
     
-    log "Auto-start configured"
+    log "Auto-start configured with proven Chromium configuration"
 }
 
 # Configure display settings
@@ -187,6 +210,7 @@ configure_display() {
 @xset -dpms
 @xset s noblank
 @unclutter -idle 0.1 -root
+/home/pi/start-display.sh
 EOF
             chown pi:pi "$autostart_file" 2>/dev/null || true
             break
@@ -200,6 +224,7 @@ EOF
 @xset -dpms
 @xset s noblank
 @unclutter -idle 0.1 -root
+/home/pi/start-display.sh
 EOF
     chown -R pi:pi /home/pi/.config/lxsession/
     
@@ -218,7 +243,7 @@ EOF
     "restore_on_startup": 4
   },
   "startup": {
-    "startup_urls": ["http://$SERVER_IP:3008/display"]
+    "startup_urls": ["http://$SERVER_IP:3008"]
   }
 }
 EOF
@@ -448,6 +473,76 @@ EOF
     log "Final configuration completed"
 }
 
+# Configure autologin
+configure_autologin() {
+    log "Configuring autologin..."
+    
+    # Enable desktop autologin (B4 = Desktop Autologin)
+    raspi-config nonint do_boot_behaviour B4
+    
+    # Configure lightdm autologin
+    if [ -f /etc/lightdm/lightdm.conf ]; then
+        log "Configuring lightdm autologin..."
+        
+        # Backup original config
+        cp /etc/lightdm/lightdm.conf /etc/lightdm/lightdm.conf.backup
+        
+        # Create or update lightdm.conf with autologin settings
+        cat > /etc/lightdm/lightdm.conf << EOF
+[SeatDefaults]
+autologin-user=pi
+autologin-user-timeout=0
+user-session=LXDE
+session-wrapper=/etc/X11/Xsession
+
+[Seat:*]
+autologin-user=pi
+autologin-user-timeout=0
+user-session=LXDE
+session-wrapper=/etc/X11/Xsession
+EOF
+        
+        log "Lightdm autologin configured"
+    else
+        warn "Lightdm config file not found"
+    fi
+    
+    # Ensure LXDE session is available
+    if [ ! -f /usr/share/xsessions/LXDE.desktop ]; then
+        log "Creating LXDE session file..."
+        cat > /usr/share/xsessions/LXDE.desktop << EOF
+[Desktop Entry]
+Name=LXDE
+Comment=Lightweight X11 Desktop Environment
+Exec=lxsession
+Type=Application
+EOF
+    fi
+    
+    # Create user session configuration
+    mkdir -p /home/pi/.config/lxsession/LXDE
+    cat > /home/pi/.config/lxsession/LXDE/desktop.conf << EOF
+[GTK]
+sNet/ThemeName=Adwaita
+sNet/IconThemeName=Adwaita
+sGtk/FontName=Sans 12
+sGtk/MenuFontName=Sans 12
+sGtk/ToolbarFontName=Sans 12
+sGtk/ButtonFontName=Sans 12
+EOF
+    
+    chown -R pi:pi /home/pi/.config/lxsession/
+    
+    # Verify autologin is enabled
+    if [ "$(raspi-config nonint get_autologin)" = "0" ]; then
+        log "Autologin enabled successfully"
+    else
+        warn "Failed to enable autologin"
+    fi
+    
+    log "Autologin configured"
+}
+
 # Main execution
 main() {
     log "Starting Inpatient Display Pi setup..."
@@ -462,6 +557,7 @@ main() {
     install_dependencies
     configure_autostart
     configure_display
+    configure_autologin
     setup_reboot_service
     register_pi
     setup_periodic_registration

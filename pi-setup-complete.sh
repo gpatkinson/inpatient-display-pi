@@ -147,6 +147,10 @@ chromium-browser \
   --disable-software-rasterizer \
   --noerrdialogs \
   --disable-infobars \
+  --disable-features=TranslateUI \
+  --disable-component-update \
+  --disable-default-apps \
+  --disable-features=OptimizationHints \
   --kiosk \
   --enable-touch-events \
   --enable-touch-drag-drop \

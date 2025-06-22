@@ -277,10 +277,9 @@ setup_reboot_service() {
     # Update service file to use correct paths
     sed -i 's|ExecStart=/usr/bin/node /usr/local/bin/inpatient-reboot-service|ExecStart=/usr/bin/node /opt/inpatient-display/reboot-service.js|g' /etc/systemd/system/inpatient-reboot-service.service
     
-    # Copy reboot service script to setup directory
-    cp "$SETUP_DIR/reboot-service.js" /opt/inpatient-display/reboot-service.js
-    chmod +x /opt/inpatient-display/reboot-service.js
-    chown root:root /opt/inpatient-display/reboot-service.js
+    # Set permissions on existing reboot service script
+    chmod +x "$SETUP_DIR/reboot-service.js"
+    chown root:root "$SETUP_DIR/reboot-service.js"
     
     # Set proper permissions for service file
     chown root:root /etc/systemd/system/inpatient-reboot-service.service

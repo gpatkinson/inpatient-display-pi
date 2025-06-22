@@ -266,23 +266,45 @@ setup_reboot_service() {
         error "Service file not found: $SETUP_DIR/reboot-service.service"
     fi
     
-    # Copy service file
-    cp "$SETUP_DIR/reboot-service.service" /etc/systemd/system/
-    
-    # Update service file to run from correct directory
-    sed -i 's|ExecStart=/usr/bin/node /usr/local/bin/inpatient-reboot-service|ExecStart=/usr/bin/node /opt/inpatient-display/reboot-service.js|g' /etc/systemd/system/reboot-service.service
-    
-    # Copy reboot service script (keep for reference)
+    # Check if reboot service script exists
     if [ ! -f "$SETUP_DIR/reboot-service.js" ]; then
         error "Reboot service script not found: $SETUP_DIR/reboot-service.js"
     fi
-    cp "$SETUP_DIR/reboot-service.js" /usr/local/bin/inpatient-reboot-service
-    chmod +x /usr/local/bin/inpatient-reboot-service
     
-    # Enable and start service
+    # Copy service file with correct name
+    cp "$SETUP_DIR/reboot-service.service" /etc/systemd/system/inpatient-reboot-service.service
+    
+    # Update service file to use correct paths
+    sed -i 's|ExecStart=/usr/bin/node /usr/local/bin/inpatient-reboot-service|ExecStart=/usr/bin/node /opt/inpatient-display/reboot-service.js|g' /etc/systemd/system/inpatient-reboot-service.service
+    
+    # Copy reboot service script to setup directory
+    cp "$SETUP_DIR/reboot-service.js" /opt/inpatient-display/reboot-service.js
+    chmod +x /opt/inpatient-display/reboot-service.js
+    chown root:root /opt/inpatient-display/reboot-service.js
+    
+    # Set proper permissions for service file
+    chown root:root /etc/systemd/system/inpatient-reboot-service.service
+    chmod 644 /etc/systemd/system/inpatient-reboot-service.service
+    
+    # Reload systemd and enable service
     systemctl daemon-reload
-    systemctl enable reboot-service.service
-    systemctl start reboot-service.service
+    systemctl enable inpatient-reboot-service.service
+    
+    # Start service and check if it's running
+    if systemctl start inpatient-reboot-service.service; then
+        sleep 2
+        if systemctl is-active --quiet inpatient-reboot-service.service; then
+            log "Reboot service started successfully"
+        else
+            warn "Reboot service failed to start properly"
+            log "Service logs:"
+            systemctl status inpatient-reboot-service.service --no-pager -l
+        fi
+    else
+        warn "Failed to start reboot service"
+        log "Service logs:"
+        systemctl status inpatient-reboot-service.service --no-pager -l
+    fi
     
     log "Reboot service configured"
 }
@@ -383,14 +405,46 @@ configure_firewall() {
         ufw allow 80
         ufw allow 443
         
+        # Allow reboot service port
+        ufw allow 3001
+        log "Added port 3001 for reboot service"
+        
         # Enable firewall
         ufw --force enable
         
-        log "Firewall configured with UFW"
+        log "Firewall configured with UFW (SSH, HTTP, HTTPS, and port 3001 allowed)"
     else
         warn "UFW installation failed, skipping firewall configuration"
         log "You may want to configure firewall manually or install UFW later"
     fi
+}
+
+# Test connectivity to server
+test_connectivity() {
+    log "Testing connectivity to server..."
+    
+    # Test ping to server
+    if ping -c 1 "$SERVER_IP" >/dev/null 2>&1; then
+        log "✅ Server is reachable via ping"
+    else
+        warn "❌ Server is not reachable via ping"
+    fi
+    
+    # Test connection to backend port
+    if timeout 5 nc -zv "$SERVER_IP" "$SERVER_PORT" >/dev/null 2>&1; then
+        log "✅ Backend port $SERVER_PORT is accessible"
+    else
+        warn "❌ Backend port $SERVER_PORT is not accessible"
+    fi
+    
+    # Test connection to frontend port
+    if timeout 5 nc -zv "$SERVER_IP" 3008 >/dev/null 2>&1; then
+        log "✅ Frontend port 3008 is accessible"
+    else
+        warn "❌ Frontend port 3008 is not accessible"
+    fi
+    
+    log "Connectivity tests completed"
 }
 
 # Create status script
@@ -406,12 +460,22 @@ echo "Uptime: $(uptime)"
 echo ""
 
 echo "=== Services ==="
-systemctl status reboot-service.service --no-pager -l
+systemctl status inpatient-reboot-service.service --no-pager -l
 echo ""
 
 echo "=== Network ==="
 echo "IP Address: $(hostname -I)"
 echo "Hostname: $(hostname)"
+echo ""
+
+echo "=== Reboot Service Test ==="
+if curl -s http://localhost:3001/health >/dev/null 2>&1; then
+    echo "✅ Reboot service is responding on port 3001"
+    HEALTH_RESPONSE=$(curl -s http://localhost:3001/health)
+    echo "   Health response: $HEALTH_RESPONSE"
+else
+    echo "❌ Reboot service is not responding on port 3001"
+fi
 echo ""
 
 echo "=== Registration ==="
@@ -429,6 +493,15 @@ echo ""
 
 echo "=== Cron Jobs ==="
 crontab -l 2>/dev/null || echo "No cron jobs found"
+echo ""
+
+echo "=== Firewall Status ==="
+if command -v ufw >/dev/null 2>&1; then
+    echo "UFW Status:"
+    ufw status | head -10
+else
+    echo "UFW not installed"
+fi
 EOF
     
     chmod +x /usr/local/bin/inpatient-status
@@ -446,7 +519,7 @@ create_update_script() {
 cd /opt/inpatient-display
 git pull origin main
 npm install
-systemctl restart reboot-service.service
+systemctl restart inpatient-reboot-service.service
 echo "Update completed. Consider rebooting if needed."
 EOF
     
@@ -567,6 +640,7 @@ main() {
     setup_periodic_registration
     configure_ssh
     configure_firewall
+    test_connectivity
     create_status_script
     create_update_script
     final_setup
@@ -577,9 +651,11 @@ main() {
     log "2. Check status: inpatient-status"
     log "3. View logs: tail -f /tmp/pi-registration.log"
     log "4. Update system: inpatient-update"
+    log "5. Test reboot from admin panel"
     
     echo ""
     echo -e "${GREEN}Setup completed! Please reboot the Pi to start the display.${NC}"
+    echo -e "${GREEN}The reboot service is configured and should work from the admin panel.${NC}"
 }
 
 # Run main function

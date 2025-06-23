@@ -20,6 +20,9 @@ REPO_URL="https://github.com/gpatkinson/inpatient-display-pi.git"  # Change this
 SETUP_DIR="/opt/inpatient-display"
 LOG_FILE="/tmp/pi-setup.log"
 
+# Reboot configuration (set to empty string to disable auto-reboot)
+AUTO_REBOOT_TIME="02:00"  # 24-hour format, e.g., "02:00" for 2 AM, or "" to disable
+
 # Logging function
 log() {
     echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOG_FILE"
@@ -259,116 +262,70 @@ EOF
 
 # Install and configure reboot service
 setup_reboot_service() {
-    log "Setting up reboot service..."
+    log "Setting up simple cron-based reboot service..."
     
-    # Check if service file exists
-    if [ ! -f "$SETUP_DIR/reboot-service.service" ]; then
-        error "Service file not found: $SETUP_DIR/reboot-service.service"
-    fi
+    # Create reboot script
+    cat > /usr/local/bin/inpatient-reboot << 'EOF'
+#!/bin/bash
+
+# Simple reboot script for inpatient display Pi
+# This script is called by cron to reboot the Pi
+
+echo "$(date): Inpatient Display Pi - Scheduled reboot initiated" >> /var/log/inpatient-display/reboot.log
+
+# Wait a moment for log to be written
+sleep 2
+
+# Execute reboot
+/sbin/reboot
+EOF
     
-    # Check if reboot service script exists
-    if [ ! -f "$SETUP_DIR/reboot-service.js" ]; then
-        error "Reboot service script not found: $SETUP_DIR/reboot-service.js"
-    fi
+    chmod +x /usr/local/bin/inpatient-reboot
     
-    # Copy service file with correct name
-    cp "$SETUP_DIR/reboot-service.service" /etc/systemd/system/inpatient-reboot-service.service
-    
-    # Update service file to use correct paths
-    sed -i 's|ExecStart=/usr/bin/node /usr/local/bin/inpatient-reboot-service|ExecStart=/usr/bin/node /opt/inpatient-display/reboot-service.js|g' /etc/systemd/system/inpatient-reboot-service.service
-    
-    # Set permissions on existing reboot service script
-    chmod +x "$SETUP_DIR/reboot-service.js"
-    chown root:root "$SETUP_DIR/reboot-service.js"
-    
-    # Set proper permissions for service file
-    chown root:root /etc/systemd/system/inpatient-reboot-service.service
-    chmod 644 /etc/systemd/system/inpatient-reboot-service.service
-    
-    # Reload systemd and enable service
-    systemctl daemon-reload
-    systemctl enable inpatient-reboot-service.service
-    
-    # Start service and check if it's running
-    if systemctl start inpatient-reboot-service.service; then
-        sleep 2
-        if systemctl is-active --quiet inpatient-reboot-service.service; then
-            log "Reboot service started successfully"
+    # Set up cron job if reboot time is configured
+    if [ -n "$AUTO_REBOOT_TIME" ]; then
+        log "Setting up daily reboot at $AUTO_REBOOT_TIME"
+        
+        # Parse time into hour and minute
+        HOUR=$(echo "$AUTO_REBOOT_TIME" | cut -d: -f1)
+        MINUTE=$(echo "$AUTO_REBOOT_TIME" | cut -d: -f2)
+        
+        # Remove any existing reboot cron job
+        (crontab -l 2>/dev/null | grep -v "inpatient-reboot") | crontab -
+        
+        # Add new cron job
+        (crontab -l 2>/dev/null; echo "$MINUTE $HOUR * * * /usr/local/bin/inpatient-reboot") | crontab -
+        
+        # Verify cron job was added
+        if crontab -l 2>/dev/null | grep -q "inpatient-reboot"; then
+            log "✅ Daily reboot cron job added successfully at $AUTO_REBOOT_TIME"
         else
-            warn "Reboot service failed to start properly"
-            log "Service logs:"
-            systemctl status inpatient-reboot-service.service --no-pager -l
+            warn "❌ Failed to add reboot cron job"
         fi
     else
-        warn "Failed to start reboot service"
-        log "Service logs:"
-        systemctl status inpatient-reboot-service.service --no-pager -l
+        log "Auto-reboot disabled (AUTO_REBOOT_TIME is empty)"
+        
+        # Remove any existing reboot cron job
+        (crontab -l 2>/dev/null | grep -v "inpatient-reboot") | crontab -
     fi
     
-    log "Reboot service configured"
+    # Create log directory
+    mkdir -p /var/log/inpatient-display
+    chown pi:pi /var/log/inpatient-display
+    
+    log "Simple reboot service configured"
 }
 
 # Register Pi with server
 register_pi() {
-    log "Registering Pi with server..."
-    
-    # Generate API key if not exists
-    if [ ! -f /etc/inpatient-display/api-key ]; then
-        API_KEY=$(openssl rand -hex 32)
-        echo "$API_KEY" > /etc/inpatient-display/api-key
-        chmod 644 /etc/inpatient-display/api-key
-        chown pi:pi /etc/inpatient-display/api-key
-        log "Generated new API key"
-    else
-        API_KEY=$(cat /etc/inpatient-display/api-key)
-        # Fix permissions if they're wrong
-        chmod 644 /etc/inpatient-display/api-key
-        chown pi:pi /etc/inpatient-display/api-key
-        log "Using existing API key"
-    fi
-    
-    # Get current IP and hostname
-    CURRENT_IP=$(hostname -I | awk '{print $1}')
-    HOSTNAME=$(hostname)
-    
-    # Register with server
-    cd "$SETUP_DIR"
-    node register-pi.js "$API_KEY" "$HOSTNAME" "$CURRENT_IP"
-    
-    log "Pi registration completed"
+    log "Pi registration not needed for simple cron-based reboot system"
+    log "Reboot functionality is now handled locally via cron"
 }
 
 # Setup periodic registration
 setup_periodic_registration() {
-    log "Setting up periodic registration..."
-    
-    # Copy periodic registration script
-    cp "$SETUP_DIR/register-pi-periodic.js" /usr/local/bin/
-    chmod +x /usr/local/bin/register-pi-periodic.js
-    
-    # Ensure API key file has correct permissions for pi user
-    if [ -f /etc/inpatient-display/api-key ]; then
-        chmod 644 /etc/inpatient-display/api-key
-        chown pi:pi /etc/inpatient-display/api-key
-    fi
-    
-    # Add to crontab (remove any existing entries first)
-    CRON_JOB="*/5 * * * * sudo /usr/bin/node /usr/local/bin/register-pi-periodic.js >> /tmp/pi-registration.log 2>&1"
-    
-    # Remove existing cron job if it exists
-    (crontab -l 2>/dev/null | grep -v "register-pi-periodic.js") | crontab -
-    
-    # Add new cron job
-    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
-    
-    # Verify cron job was added
-    if crontab -l 2>/dev/null | grep -q "register-pi-periodic.js"; then
-        log "Periodic registration cron job added successfully"
-    else
-        warn "Failed to add periodic registration cron job"
-    fi
-    
-    log "Periodic registration configured"
+    log "Periodic registration not needed for simple cron-based reboot system"
+    log "No server communication required for local cron reboots"
 }
 
 # Configure SSH (optional)
@@ -404,14 +361,10 @@ configure_firewall() {
         ufw allow 80
         ufw allow 443
         
-        # Allow reboot service port
-        ufw allow 3001
-        log "Added port 3001 for reboot service"
-        
         # Enable firewall
         ufw --force enable
         
-        log "Firewall configured with UFW (SSH, HTTP, HTTPS, and port 3001 allowed)"
+        log "Firewall configured with UFW (SSH, HTTP, HTTPS allowed)"
     else
         warn "UFW installation failed, skipping firewall configuration"
         log "You may want to configure firewall manually or install UFW later"
@@ -458,36 +411,27 @@ echo "Date: $(date)"
 echo "Uptime: $(uptime)"
 echo ""
 
-echo "=== Services ==="
-systemctl status inpatient-reboot-service.service --no-pager -l
-echo ""
-
 echo "=== Network ==="
 echo "IP Address: $(hostname -I)"
 echo "Hostname: $(hostname)"
 echo ""
 
-echo "=== Reboot Service Test ==="
-if curl -s http://localhost:3001/health >/dev/null 2>&1; then
-    echo "✅ Reboot service is responding on port 3001"
-    HEALTH_RESPONSE=$(curl -s http://localhost:3001/health)
-    echo "   Health response: $HEALTH_RESPONSE"
+echo "=== Auto-Reboot Configuration ==="
+if crontab -l 2>/dev/null | grep -q "inpatient-reboot"; then
+    echo "✅ Auto-reboot is configured"
+    echo "   Cron job: $(crontab -l 2>/dev/null | grep inpatient-reboot)"
 else
-    echo "❌ Reboot service is not responding on port 3001"
+    echo "❌ Auto-reboot is not configured"
 fi
 echo ""
 
-echo "=== Registration ==="
-if [ -f /etc/inpatient-display/api-key ]; then
-    echo "API Key: $(cat /etc/inpatient-display/api-key | cut -c1-8)..."
+echo "=== Reboot Logs ==="
+if [ -f /var/log/inpatient-display/reboot.log ]; then
+    echo "Last 5 reboot entries:"
+    tail -5 /var/log/inpatient-display/reboot.log
 else
-    echo "API Key: Not found"
+    echo "No reboot logs found"
 fi
-echo ""
-
-echo "=== Logs ==="
-echo "Registration log (last 10 lines):"
-tail -10 /tmp/pi-registration.log 2>/dev/null || echo "No registration log found"
 echo ""
 
 echo "=== Cron Jobs ==="
@@ -518,7 +462,6 @@ create_update_script() {
 cd /opt/inpatient-display
 git pull origin main
 npm install
-systemctl restart inpatient-reboot-service.service
 echo "Update completed. Consider rebooting if needed."
 EOF
     
@@ -536,7 +479,7 @@ final_setup() {
     
     # Create log rotation
     cat > /etc/logrotate.d/inpatient-display << EOF
-/tmp/pi-registration.log {
+/var/log/inpatient-display/reboot.log {
     daily
     missingok
     rotate 7
@@ -648,13 +591,21 @@ main() {
     log "Next steps:"
     log "1. Reboot the Pi: sudo reboot"
     log "2. Check status: inpatient-status"
-    log "3. View logs: tail -f /tmp/pi-registration.log"
+    log "3. View reboot logs: tail -f /var/log/inpatient-display/reboot.log"
     log "4. Update system: inpatient-update"
-    log "5. Test reboot from admin panel"
+    if [ -n "$AUTO_REBOOT_TIME" ]; then
+        log "5. Auto-reboot is configured for $AUTO_REBOOT_TIME daily"
+    else
+        log "5. Auto-reboot is disabled (set AUTO_REBOOT_TIME to enable)"
+    fi
     
     echo ""
     echo -e "${GREEN}Setup completed! Please reboot the Pi to start the display.${NC}"
-    echo -e "${GREEN}The reboot service is configured and should work from the admin panel.${NC}"
+    if [ -n "$AUTO_REBOOT_TIME" ]; then
+        echo -e "${GREEN}Auto-reboot is configured for $AUTO_REBOOT_TIME daily.${NC}"
+    else
+        echo -e "${GREEN}Auto-reboot is disabled. Set AUTO_REBOOT_TIME in the script to enable.${NC}"
+    fi
 }
 
 # Run main function

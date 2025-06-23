@@ -21,7 +21,7 @@ SETUP_DIR="/opt/inpatient-display"
 LOG_FILE="/tmp/pi-setup.log"
 
 # Reboot configuration (set to empty string to disable auto-reboot)
-AUTO_REBOOT_TIME="02:00"  # 24-hour format, e.g., "02:00" for 2 AM, or "" to disable
+AUTO_REBOOT_TIME="07:45"  # 24-hour format, e.g., "02:00" for 2 AM, or "" to disable
 
 # Logging function
 log() {
@@ -71,15 +71,16 @@ install_packages() {
         openssh-server \
         lightdm
     
+    #NODE NOT REQUIRED IF REBOOT IS MANAGED THROUGH CRON
     # Install Node.js 20.x from NodeSource
-    log "Installing Node.js 20.x..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt install -y nodejs
+    #log "Installing Node.js 20.x..."
+    #curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    #apt install -y nodejs
     
     # Verify Node.js and npm versions
-    NODE_VERSION=$(node --version)
-    NPM_VERSION=$(npm --version)
-    log "Installed Node.js $NODE_VERSION and npm $NPM_VERSION"
+    #NODE_VERSION=$(node --version)
+    #NPM_VERSION=$(npm --version)
+    #log "Installed Node.js $NODE_VERSION and npm $NPM_VERSION"
     
     log "Package installation completed"
 }
@@ -106,13 +107,14 @@ clone_repository() {
     log "Repository setup completed"
 }
 
+# NOT REQUIRED IF REBOOT IS MANAGED THROUGH CRON
 # Install Node.js dependencies
-install_dependencies() {
-    log "Installing Node.js dependencies..."
-    cd "$SETUP_DIR"
-    npm install
-    log "Dependencies installed"
-}
+#install_dependencies() {
+#    log "Installing Node.js dependencies..."
+#    cd "$SETUP_DIR"
+#    npm install
+#    log "Dependencies installed"
+#}
 
 # Configure auto-start
 configure_autostart() {
